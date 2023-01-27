@@ -8,6 +8,10 @@ scrapy = "*"
 twisted = {extras = ["tls"], version = "*"}
 beautifulsoup4 = "*"
 orjson = "*"
+httpx = "*"
+markdown = "*"
+lxml = "*"
+pillow = "*"
 
 [dev-packages]
 
