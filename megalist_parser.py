@@ -4,16 +4,18 @@ import markdown
 import shutil
 import subprocess
 import urllib.request
+import urllib.parse
 import os
 import re
 from lxml import etree
 from pathlib import Path
 from collections import defaultdict
 from PIL import Image
+import sys
 
 # get megalist from github
 megalist = httpx.get(
-    "https://github.com/Hypnootize/TF2-HUDs-Archive/blob/master/Updated%20HUDs%20List.md"
+    "https://raw.githubusercontent.com/Hypnootize/TF2-HUDs-Archive/master/Updated%20HUDs%20List.md"
 ).text
 
 # split it up to iterate through the lines until we find the table
@@ -26,7 +28,7 @@ for n in range(len(megalist)):
         table_start = n
         break
 
-megalist = "\n".join(megalist[table_start:])
+megalist = "\n".join(megalist[table_start:-2])
 
 input_data = Path("input")
 input_huds = defaultdict(dict)
@@ -47,8 +49,12 @@ for n, line in enumerate(megalist.split("\n")):
             data[col] = value
         huds.append(data)
 
+img_pattern = re.compile(r"<img(.*?)(/>|>)")
 
-def get_doc(text):
+
+def get_doc(raw_text):
+    text = img_pattern.sub(r"<img\1/>", raw_text)
+    text = text.replace("&", "%26")
     return etree.fromstring(markdown.markdown(text))
 
 
@@ -56,7 +62,14 @@ def get_links(text):
     doc = get_doc(text)
     links = {}
     for link in doc.xpath("//a"):
-        links[link.text] = link.get("href")
+        img = link.find("img")
+        site_name = (
+            img.get("src")
+            .replace("/Hypnootize/TF2-HUDs-Archive/raw/master/icons/", "")
+            .replace("/icons/", "")
+            .replace(".png", "")
+        )
+        links[site_name] = link.get("href")
     return links
 
 
@@ -75,43 +88,56 @@ def get_authors(text):
 hud_data = {}
 
 for hud in huds:
-    hud_name = hud["HUD Name"]
+    hud_name = hud["HUD"]
 
     # Check for repo first
     repo_links = get_links(hud["Repository"]) if hud["Repository"] else None
-    repo = repo_links["GitHub"] if repo_links and "GitHub" in repo_links else None
+    repo = repo_links["github"] if repo_links and "github" in repo_links else None
+
+    download = get_links(hud["Download"])["download"] if hud["Download"] else None
+
     if not repo:
-        print(f"HUD {hud_name} has no repo, skipping")
+        if "github.com" in download:
+            download_url = urllib.parse.urlparse(download)
+            path = download_url.path
+            parts = path.split("/")
+            repo = "https://github.com/" + parts[1] + "/" + parts[2]
+
+    if repo:
         continue
 
-    if repo.endswith("/"):
-        repo = repo[:-1]
-    if repo.endswith(".git"):
-        repo = repo[:-4]
+    if repo:
+        if repo.endswith("/"):
+            repo = repo[:-1]
+        if repo.endswith(".git"):
+            repo = repo[:-4]
 
     # Get the rest of the data
-    hud_id = hud_name.lower().replace(" ", "-")
+    hud_id = hud_name.lower().replace(" ", "-").replace("'", "").replace(".", "-")
     hud_id = re.sub(r"-+", "-", hud_id)
-    author = get_authors(hud["`Creator` & *Maintainer*"])
+    author = hud["Creator"]
     steam_group = (
-        get_links(hud["Steam Group"])["Steam"].replace(
+        get_links(hud["Steam"])["steam"].replace(
             "https://steamcommunity.com/groups/", ""
         )
-        if hud["Steam Group"]
+        if hud["Steam"]
         else None
     )
+    discord_links = (
+        get_links(hud["Forum & Discord"]) if hud["Forum & Discord"] else None
+    )
     discord = (
-        get_links(hud["Discord"])["Discord"].replace("https://discord.gg/", "")
-        if hud["Discord"]
+        discord_links["discord"].replace("https://discord.gg/", "")
+        if hud["Forum & Discord"] and "discord" in discord_links
         else None
     )
 
     # must have screenshots, in practice only the default HUDs listed don't
-    if not hud["Screens"]:
+    if not hud["Album"]:
         continue
 
-    image_links = get_links(hud["Screens"])
-    album = image_links["Album"] if "Album" in image_links else image_links["Screen"]
+    image_links = get_links(hud["Album"])
+    album = image_links["screenshots"]
 
     # Conditionally build the data
     hud_meta_in = input_huds[hud_id]
@@ -126,7 +152,7 @@ for hud in huds:
             hud_meta["social"]["steam_group"] = steam_group
         if discord:
             hud_meta["social"]["discord"] = discord
-        hud_meta["repo"] = repo
+        hud_meta["repo"] = repo if repo else download
         hud_meta["hash"] = ""
         if hud_meta_in.get("parent"):
             hud_meta["parent"] = hud_meta_in["parent"]
@@ -158,21 +184,26 @@ for hud_id, hud in hud_data.items():
 
     hud["resources"] = hud["resources"] or [f"{hud_id}-banner"]
 
-    hud["hash"] = (
-        hud["hash"]
-        or subprocess.check_output(["git", "ls-remote", hud["repo"], "HEAD"])
-        .decode("utf-8")
-        .split()[0]
-    )
+    if hud["repo"] and "github.com" in hud["repo"]:
+        hud["hash"] = (
+            hud["hash"]
+            or subprocess.check_output(["git", "ls-remote", hud["repo"], "HEAD"])
+            .decode("utf-8")
+            .split()[0]
+        )
 
     with open(hud_data_path, "w") as f:
         json.dump(hud, f, indent=2)
 
 imgur_client_id = os.getenv("IMGUR_CLIENT_ID")
-imgur_headers = {
-    "Authorization": "Client-ID " + imgur_client_id,
-    "Accept": "application/json",
-}
+imgur_headers = (
+    {
+        "Authorization": "Client-ID " + imgur_client_id,
+        "Accept": "application/json",
+    }
+    if imgur_client_id
+    else None
+)
 
 
 def download_img(url, folder, final_path):
@@ -199,7 +230,7 @@ for hud_id, hud in hud_data.items():
         # single img, not an album
         del hud["social"]["album"]
         download_img(img_url, data_res_id, f"{hud_id}-banner")
-    elif (
+    elif imgur_headers and (
         "imgur.com/a/" in res
         or "imgur.com/gallery/" in res
         or "imgur.com/album/" in res
@@ -216,7 +247,7 @@ for hud_id, hud in hud_data.items():
         except Exception:
             print(res)
             print(f"Failed to get imgur data for {hud_id}: {imgur_resp.text}")
-            raise
+            continue
         images = imgur_data["data"]["images"]
         for idx in range(min(4, len(images))):
             img_link = images[idx]["link"]
