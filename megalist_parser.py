@@ -63,12 +63,7 @@ def get_links(text):
     links = {}
     for link in doc.xpath("//a"):
         img = link.find("img")
-        site_name = (
-            img.get("src")
-            .replace("/Hypnootize/TF2-HUDs-Archive/raw/master/icons/", "")
-            .replace("/icons/", "")
-            .replace(".png", "")
-        )
+        site_name = img.get("src").replace("/icons/", "").replace(".png", "")
         links[site_name] = link.get("href")
     return links
 
@@ -102,9 +97,6 @@ for hud in huds:
             path = download_url.path
             parts = path.split("/")
             repo = "https://github.com/" + parts[1] + "/" + parts[2]
-
-    if repo:
-        continue
 
     if repo:
         if repo.endswith("/"):
@@ -152,7 +144,42 @@ for hud in huds:
             hud_meta["social"]["steam_group"] = steam_group
         if discord:
             hud_meta["social"]["discord"] = discord
-        hud_meta["repo"] = repo if repo else download
+
+        forum = None
+        if not steam_group:
+            forum_links = (
+                get_links(hud["Forum & Discord"]) if hud["Forum & Discord"] else None
+            )
+            if forum_links:
+                if "reddit" in forum_links:
+                    forum = forum_links["reddit"]
+                elif "etf2l" in forum_links:
+                    forum = forum_links["etf2l"]
+                elif "tftv" in forum_links:
+                    forum = forum_links["tftv"]
+        else:
+            forum = f"https://steamcommunity.com/groups/{steam_group}"
+
+        download_is_download = (
+            "dropbox.com" in download
+            or "drive.google.com" in download
+            or "mega.nz" in download
+            or "mediafire.com" in download
+        )
+
+        hud_meta["repo"] = (
+            repo
+            if repo
+            else download
+            if not download_is_download
+            else get_links(hud["Game Banana"])["gamebanana"]
+            if hud["Game Banana"]
+            else forum
+            if forum
+            else download
+        )
+        if not hud_meta["repo"]:
+            raise Exception(f"Missing repo for {hud_id}")
         hud_meta["hash"] = ""
         if hud_meta_in.get("parent"):
             hud_meta["parent"] = hud_meta_in["parent"]
